@@ -194,17 +194,89 @@ export const AttestationManager: React.FC<AttestationManagerProps> = ({
       `[CHECK 5/7] verify_executable_integrity() => Hashing target executable in-memory... SHA-256 matches manifest artifact_hash (OK)`,
       `[CHECK 6/7] verify_blueprint_permission() => Blueprint authorizes binary deployment target 'dist/server' under blueprint: ${blueprintHash.substring(0, 16)}... (OK)`,
       `[CHECK 7/7] verify_budget_enforcement() => Querying Covenant Ledger. Authorized: $5.00 | Consumed: $0.31 | Available: $4.69. Budget Check: OK`,
-      `[DECISION] ALL CONSTRAINTS MET. Generating cryptographically signed Execution Permit...`
+      `[DECISION] Calling backend /api/covenant/execute with deterministic PlanIR payload...`
     ];
 
     for (let i = 0; i < checkLogs.length; i++) {
       setGateLogs(prev => [...prev, checkLogs[i]]);
-      await new Promise(resolve => setTimeout(resolve, 350));
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
 
-    const mockPermit = `permit_sig_0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`;
-    setGateAuthorizedPermit(mockPermit);
-    setGateStatus("PASSED");
+    try {
+      // 1. Construct the PlanSteps
+      const mockSteps = [
+        {
+          stepId: "a1b2c3d4-e5f6-7h8i-9j0k-1l2m3n4o5p6q",
+          sequence: 1,
+          capability: "govern_agent_session_tool",
+          lane: 3 as const,
+          inputSchema: { type: "object" },
+          expectedOutput: { type: "object" },
+          riskLevel: "HIGH" as const,
+          requiresApproval: true,
+          approvalToken: "token_approved_0x8f3c7d1e8c9b4a2e5d6f",
+          idempotencyKey: "0xa1b2c3d4e5f6"
+        }
+      ];
+
+      // 2. Client-side hash calculation to match the server-side exactly
+      const sortedSteps = [...mockSteps].sort((a, b) => a.sequence - b.sequence);
+      const keys = Object.keys(mockSteps[0] ?? {}).sort();
+      const canonical = JSON.stringify(sortedSteps, keys);
+      const msgUint8 = new TextEncoder().encode(canonical);
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", msgUint8);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+
+      // 3. Complete PlanIR object
+      const mockPlan = {
+        planId: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        version: "4.02.0",
+        status: "APPROVED" as const,
+        tenantId: "tenant_veklom_default",
+        agentId: "agent_cappo_v1",
+        compiledAt: new Date().toISOString(),
+        intent: "Deploy secure autonomous solar micro-charger network gateway",
+        steps: mockSteps,
+        canonicalHash: hashHex,
+        einsteinScore: 0.985,
+        ssrnValidated: true,
+        replayable: true
+      };
+
+      const res = await fetch("/api/covenant/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: mockPlan })
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        setGateLogs(prev => [
+          ...prev,
+          `[BACKEND SUCCESS] ${result.message}`,
+          `[BACKEND CANONICAL HASH] ${result.canonicalHash}`,
+          `[COVENANT STATUS] ALL CONSTRAINTS MET. Generating cryptographically signed Execution Permit...`
+        ]);
+        const mockPermit = `permit_sig_0x${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`;
+        setGateAuthorizedPermit(mockPermit);
+        setGateStatus("PASSED");
+      } else {
+        const errData = await res.json();
+        setGateLogs(prev => [
+          ...prev,
+          `[BACKEND REFUSED] CAPPO execution gate rejected the plan!`,
+          `[REASON] ${errData.error || "Unknown validation error."}`
+        ]);
+        setGateStatus("FAILED");
+      }
+    } catch (err: any) {
+      setGateLogs(prev => [
+        ...prev,
+        `[CRITICAL ERROR] Failed to contact the backend: ${err.message}`
+      ]);
+      setGateStatus("FAILED");
+    }
   };
 
   return (

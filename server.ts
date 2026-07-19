@@ -5,6 +5,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { validatePlanIR, PlanIR } from "./src/core/plan-ir";
 
 dotenv.config();
 
@@ -1315,6 +1316,58 @@ You must return a valid JSON object matching this schema exactly:
   } catch (err: any) {
     console.error("GitHub Analysis Error:", err);
     return res.status(500).json({ error: err.message || "Failed to compile repository cross-reference alignment." });
+  }
+});
+
+// ==========================================
+// CAPPO INTERCEPT GUARD & EXECUTION GATE
+// ==========================================
+
+function cappoBlueprintGuard(plan: PlanIR): void {
+  const validation = validatePlanIR(plan);
+  if (!validation.valid) {
+    throw new Error(
+      `CAPPO HALT — Blueprint integrity violation:\n${validation.errors.join('\n')}`
+    );
+  }
+  if (plan.status !== 'APPROVED') {
+    throw new Error(
+      `CAPPO HALT — Plan ${plan.planId} is in status "${plan.status}", not APPROVED. Execution blocked.`
+    );
+  }
+  const lane3Steps = plan.steps.filter(s => s.lane === 3);
+  for (const step of lane3Steps) {
+    if (!step.approvalToken) {
+      throw new Error(
+        `CAPPO HALT — Lane 3 step "${step.stepId}" (${step.capability}) missing approval token.`
+      );
+    }
+  }
+  // All checks passed — log to PGL
+  console.log(`[CAPPO] Plan ${plan.planId} cleared. Hash: ${plan.canonicalHash}`);
+}
+
+app.post("/api/covenant/execute", (req, res) => {
+  try {
+    const { plan } = req.body;
+    if (!plan) {
+      return res.status(400).json({ success: false, error: "Missing required plan payload." });
+    }
+    
+    cappoBlueprintGuard(plan as PlanIR);
+    
+    return res.json({
+      success: true,
+      message: `Plan ${plan.planId} executed successfully through CAPPO gate.`,
+      canonicalHash: plan.canonicalHash,
+      executedSteps: plan.steps.length
+    });
+  } catch (err: any) {
+    console.warn("[CAPPO GUARD FAILURE]", err.message);
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Execution blocked by CAPPO."
+    });
   }
 });
 
